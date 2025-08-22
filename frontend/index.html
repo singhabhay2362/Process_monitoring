@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Process Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .process-row:hover { background-color: #e0faff; }
+        .toggle-btn { background: none; border: none; cursor: pointer; font-weight: bold; color: #00e5ff; }
+        .hidden { display: none; }
+        .sidebar-host:hover { background-color: #bae6fd; cursor: pointer; }
+        .sidebar-host.active { background-color: #38bdf8; font-weight: bold; color: #fff; }
+        .table-header { background-color: #0ea5e9; color: #fff; font-weight: bold; }
+        .process-table tr:nth-child(even) { background-color: #f9fafb; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="flex min-h-screen">
+        <!-- Sidebar -->
+        <div class="w-1/5 bg-white shadow-md p-4">
+            <h2 class="text-lg font-semibold mb-4 text-gray-800">Hosts</h2>
+            <div id="host-list" class="space-y-2"></div>
+        </div>
+
+        <!-- Main -->
+        <div class="w-4/5 p-6">
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h1 class="text-2xl font-bold text-gray-800">Process Monitor</h1>
+                    <div>
+                        <span class="text-gray-600">Last Updated: </span>
+                        <span id="timestamp" class="text-gray-800">Loading...</span>
+                    </div>
+                </div>
+                <div id="error-message" class="hidden text-cyan-800 bg-cyan-100 p-3 rounded mb-4"></div>
+                <div id="loading-message" class="hidden text-cyan-600 mb-4">Loading data...</div>
+
+                <!-- Selected Host -->
+                <div class="mb-4">
+                    <span class="text-gray-600">Selected Host: </span>
+                    <span id="selected-host" class="text-gray-800 font-semibold">None</span>
+                </div>
+
+                <!-- Host Details -->
+                <div id="host-details" class="bg-blue-50 border border-blue-200 rounded p-4 mb-4 hidden">
+                    <h3 class="text-lg font-bold mb-2">Host Details</h3>
+                    <p><strong>Hostname:</strong> <span id="detail-hostname"></span></p>
+                    <p><strong>Total Processes:</strong> <span id="detail-total"></span></p>
+                    <p><strong>Avg CPU:</strong> <span id="detail-cpu"></span>%</p>
+                    <p><strong>Avg Memory:</strong> <span id="detail-memory"></span> MB</p>
+                    <p><strong>Last Updated:</strong> <span id="detail-timestamp"></span></p>
+                </div>
+
+                <!-- ✅ System Info Section -->
+                <div id="system-info" class="bg-green-50 border border-green-200 rounded p-4 mb-4 hidden">
+                    <h3 class="text-lg font-bold mb-2">System Info</h3>
+                    <p><strong>Name:</strong> <span id="sys-name"></span></p>
+                    <p><strong>Operating System:</strong> <span id="sys-os"></span></p>
+                    <p><strong>Processor:</strong> <span id="sys-processor"></span></p>
+                    <p><strong>Cores:</strong> <span id="sys-cores"></span></p>
+                    <p><strong>Threads:</strong> <span id="sys-threads"></span></p>
+                    <p><strong>RAM (GB):</strong> <span id="sys-ram"></span></p>
+                    <p><strong>Used RAM (GB):</strong> <span id="sys-ram-used"></span></p>
+                    <p><strong>Available RAM (GB):</strong> <span id="sys-ram-avail"></span></p>
+                    <p><strong>Storage (Total/Used/Free GB):</strong> <span id="sys-storage"></span></p>
+                    <p><strong>Updated At:</strong> <span id="sys-timestamp"></span></p>
+                </div>
+
+                <!-- Process Table -->
+                <div class="overflow-x-auto">
+                    <table class="w-full process-table">
+                        <thead>
+                            <tr class="table-header">
+                                <th class="py-2 px-4 text-left"></th>
+                                <th class="py-2 px-4 text-left">Name</th>
+                                <th class="py-2 px-4 text-left">PID</th>
+                                <th class="py-2 px-4 text-left">CPU</th>
+                                <th class="py-2 px-4 text-left">Memory</th>
+                                <th class="py-2 px-4 text-left">Disk</th>
+                                <th class="py-2 px-4 text-left">Network</th>
+                            </tr>
+                        </thead>
+                        <tbody id="process-table-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allProcesses = [];
+        let selectedHost = null;
+
+        function buildProcessTree(processes, parentPid = 0, level = 0, visitedPids = new Set()) {
+            const children = processes.filter(proc => proc.parent_pid === parentPid);
+            if (children.length === 0) return '';
+            let html = '';
+            children.forEach(proc => {
+                if (visitedPids.has(proc.pid)) return;
+                visitedPids.add(proc.pid);
+                const hasChildren = processes.some(p => p.parent_pid === proc.pid && !visitedPids.has(p.pid));
+                const indent = level * 20;
+                const safeName = proc.name ? proc.name.replace(/[<>]/g, '') : 'Unknown';
+                html += `
+                    <tr class="process-row" style="padding-left: ${indent}px;">
+                        <td class="py-2 px-4">${hasChildren ? `<button onclick="toggleChildren(${proc.pid})" id="toggle-${proc.pid}" class="toggle-btn">+</button>` : ''}</td>
+                        <td class="py-2 px-4">${safeName}</td>
+                        <td class="py-2 px-4">${proc.pid}</td>
+                        <td class="py-2 px-4">${proc.cpu_percent.toFixed(1)}%</td>
+                        <td class="py-2 px-4">${proc.memory_usage.toFixed(1)} MB</td>
+                        <td class="py-2 px-4">${proc.disk_usage.toFixed(1)} MB/s</td>
+                        <td class="py-2 px-4">${proc.net_usage.toFixed(1)} Mbps</td>
+                    </tr>
+                    <tr id="children-${proc.pid}" class="hidden"><td colspan="7">${buildProcessTree(processes, proc.pid, level + 1, visitedPids)}</td></tr>
+                `;
+            });
+            return html;
+        }
+
+        function toggleChildren(pid) {
+            const childrenRow = document.getElementById(`children-${pid}`);
+            const toggleButton = document.getElementById(`toggle-${pid}`);
+            if (childrenRow.classList.contains('hidden')) {
+                childrenRow.classList.remove('hidden'); toggleButton.textContent = '-';
+            } else {
+                childrenRow.classList.add('hidden'); toggleButton.textContent = '+';
+            }
+        }
+
+        function updateHostList(hosts) {
+            const hostListDiv = document.getElementById('host-list');
+            hostListDiv.innerHTML = hosts.map(host =>
+                `<div class="sidebar-host p-2 rounded ${selectedHost === host ? 'active' : ''}" onclick="selectHost('${host}')">${host}</div>`
+            ).join('');
+        }
+
+        async function selectHost(host) {
+            selectedHost = host;
+            document.getElementById('selected-host').textContent = host;
+            updateHostList([...new Set(allProcesses.map(p => p.hostname))]);
+
+            // ✅ Fetch Host Details
+            try {
+                const response = await fetch(`http://localhost:8000/api/processes/host/${host}/`);
+                if (response.ok) {
+                    const details = await response.json();
+                    document.getElementById("host-details").classList.remove("hidden");
+                    document.getElementById("detail-hostname").textContent = details.hostname;
+                    document.getElementById("detail-total").textContent = details.total_processes;
+                    document.getElementById("detail-cpu").textContent = details.avg_cpu.toFixed(1);
+                    document.getElementById("detail-memory").textContent = details.avg_memory.toFixed(1);
+                    document.getElementById("detail-timestamp").textContent = new Date(details.latest_timestamp).toLocaleString();
+                }
+            } catch (err) { console.error("Error fetching host details", err); }
+
+            // ✅ Fetch System Info (fixed URL)
+            try {
+                const response = await fetch(`http://localhost:8000/api/system-info/host/${host}/`);
+                if (response.ok) {
+                    const sys = await response.json();
+                    document.getElementById("system-info").classList.remove("hidden");
+                    document.getElementById("sys-name").textContent = sys.name;
+                    document.getElementById("sys-os").textContent = sys.operating_system;
+                    document.getElementById("sys-processor").textContent = sys.processor;
+                    document.getElementById("sys-cores").textContent = sys.cores;
+                    document.getElementById("sys-threads").textContent = sys.threads;
+                    document.getElementById("sys-ram").textContent = sys.ram_gb;
+                    document.getElementById("sys-ram-used").textContent = sys.used_ram_gb;
+                    document.getElementById("sys-ram-avail").textContent = sys.available_ram_gb;
+                    document.getElementById("sys-storage").textContent = `${sys.storage_total_gb} / ${sys.storage_used_gb} / ${sys.storage_free_gb}`;
+                    document.getElementById("sys-timestamp").textContent = new Date(sys.timestamp).toLocaleString();
+                }
+            } catch (err) { console.error("Error fetching system info", err); }
+
+            // ✅ Process Table
+            const processesForHost = allProcesses.filter(proc => proc.hostname === host);
+            if (processesForHost.length > 0) {
+                const latestTimestamp = processesForHost.reduce((latest, curr) =>
+                    new Date(curr.timestamp) > new Date(latest.timestamp) ? curr : latest
+                ).timestamp;
+                document.getElementById('timestamp').textContent = new Date(latestTimestamp).toLocaleString();
+                const sameTimestamp = processesForHost.filter(proc => proc.timestamp === latestTimestamp);
+                let treeHtml = buildProcessTree(sameTimestamp);
+                document.getElementById('process-table-body').innerHTML = treeHtml;
+            } else {
+                document.getElementById('process-table-body').innerHTML =
+                    '<tr><td colspan="7" class="py-2 px-4 text-gray-600">No process data available for this host.</td></tr>';
+            }
+        }
+
+        async function fetchData() {
+            const errorDiv = document.getElementById('error-message');
+            const loadingDiv = document.getElementById('loading-message');
+            loadingDiv.classList.remove('hidden'); errorDiv.classList.add('hidden');
+            try {
+                const response = await fetch('http://localhost:8000/api/processes/');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                allProcesses = await response.json();
+                loadingDiv.classList.add('hidden');
+                if (allProcesses.length > 0) {
+                    const hosts = [...new Set(allProcesses.map(proc => proc.hostname))];
+                    updateHostList(hosts);
+                    if (!selectedHost || !hosts.includes(selectedHost)) selectedHost = hosts[0];
+                    selectHost(selectedHost);
+                }
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                errorDiv.classList.remove('hidden');
+                errorDiv.textContent = `Error connecting to backend: ${error.message}`;
+                loadingDiv.classList.add('hidden');
+            }
+        }
+
+        fetchData();
+        setInterval(fetchData, 5000);
+    </script>
+</body>
+</html>
